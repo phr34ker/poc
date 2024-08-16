@@ -1,3 +1,29 @@
+resource "google_compute_health_check" "am_health_check" {
+  name               = "am-health-check"
+  check_interval_sec = 30
+  timeout_sec        = 10
+  healthy_threshold  = 3
+  unhealthy_threshold = 3
+
+  http_health_check {
+    request_path = "/am/health"
+    port         = "80"
+  }
+}
+
+resource "google_compute_health_check" "scim_health_check" {
+  name               = "scim-health-check"
+  check_interval_sec = 30
+  timeout_sec        = 10
+  healthy_threshold  = 3
+  unhealthy_threshold = 3
+
+  http_health_check {
+    request_path = "/scim/health"
+    port         = "80"
+  }
+}
+
 provider "google" {
   project = "your-gcp-project-id"
   region  = "europe-west1"
