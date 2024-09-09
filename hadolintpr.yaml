@@ -1,0 +1,40 @@
+name: Lint Dockerfile with Hadolint
+
+on:
+  pull_request:
+    paths:
+      - '**/Dockerfile'
+
+jobs:
+  hadolint:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Install Hadolint
+      run: |
+        wget -O /bin/hadolint https://github.com/hadolint/hadolint/releases/download/v2.7.0/hadolint-Linux-x86_64
+        chmod +x /bin/hadolint
+
+    - name: Run Hadolint
+      id: hadolint
+      run: |
+        hadolint_output=$(hadolint **/Dockerfile)
+        echo "$hadolint_output"
+        echo "hadolint_output=$hadolint_output" >> $GITHUB_ENV
+
+    - name: Create PR comment with Hadolint results
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const output = process.env.hadolint_output;
+          const { context } = require('@actions/github');
+          const issue_number = context.payload.pull_request.number;
+          await github.issues.createComment({
+            ...context.repo,
+            issue_number,
+            body: `### Hadolint Report\n\`\`\`\n${output}\n\`\`\``
+          });
