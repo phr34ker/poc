@@ -1,0 +1,135 @@
+name: Maven Build and SonarQube Scan
+
+on:
+  workflow_call:
+    inputs:
+      java-version:
+        required: true
+        type: string
+      additional-maven-commands:
+        required: false
+        type: string
+      revision:
+        required: true
+        type: string
+      payloadrevision:
+        required: false
+        type: string
+    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER:
+        required: true
+      GCP_SERVICE_ACCOUNT_EMAIL:
+        required: true
+
+
+jobs:
+  build-and-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up JDK
+      uses: actions/setup-java@v3
+      with:
+        java-version: ${{ inputs.java-version }}
+        distribution: 'zulu'
+        cache: 'maven'
+
+    - name: Authenticate to Google Cloud
+      uses: google-github-actions/auth@v1.1.1
+      with:
+        workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+        service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+    - name: Download Artifactory Certificate
+      run: |
+        echo | openssl s_client -showcerts -servername artifactory.your-company.com -connect artifactory.your-company.com:443 2>/dev/null | openssl x509 -inform pem -outform der -out artifactory.cer
+
+    - name: Import Certificate to Java Truststore
+      run: |
+        keytool -import -alias artifactory -keystore $JAVA_HOME/lib/security/cacerts -file artifactory.cer -storepass changeit -noprompt
+
+    - name: Get secrets from Secret Manager
+      id: secrets
+      uses: google-github-actions/get-secretmanager-secrets@v1
+      with:
+        secrets: |
+          ARTIFACTORY_USERNAME:projects/static-gcp-project-id/secrets/artifactory-username/versions/latest
+          ARTIFACTORY_PASSWORD:projects/static-gcp-project-id/secrets/artifactory-password/versions/latest
+          SONAR_TOKEN:projects/static-gcp-project-id/secrets/sonar-token/versions/latest
+
+    - name: Create Maven settings.xml
+      run: |
+        mkdir -p ~/.m2
+        echo "<settings>
+                <servers>
+                  <server>
+                    <id>artifactory</id>
+                    <username>${{ steps.secrets.outputs.ARTIFACTORY_USERNAME }}</username>
+                    <password>${{ steps.secrets.outputs.ARTIFACTORY_PASSWORD }}</password>
+                  </server>
+                  <server>
+                    <id>sonar</id>
+                    <username>${{ steps.secrets.outputs.SONAR_TOKEN }}</username>
+                    <password></password>
+                  </server>
+                </servers>
+                <profiles>
+                  <profile>
+                    <id>artifactory</id>
+                    <repositories>
+                      <repository>
+                        <id>central</id>
+                        <url>https://artifactory.your-company.com/artifactory/mvn-libs-release</url>
+                        <snapshots>
+                          <enabled>false</enabled>
+                        </snapshots>
+                      </repository>
+                      <repository>
+                        <id>snapshots</id>
+                        <url>https://artifactory.your-company.com/artifactory/mvn-libs-snapshots</url>
+                        <snapshots>
+                          <enabled>true</enabled>
+                        </snapshots>
+                      </repository>
+                    </repositories>
+                    <pluginRepositories>
+                      <pluginRepository>
+                        <id>central</id>
+                        <url>https://artifactory.your-company.com/artifactory/mvn-plugins-release</url>
+                        <snapshots>
+                          <enabled>false</enabled>
+                        </snapshots>
+                      </pluginRepository>
+                    </pluginRepositories>
+                  </profile>
+                  <profile>
+                    <id>sonar</id>
+                    <properties>
+                      <sonar.host.url>https://sonar.sdlc.tools.de</sonar.host.url>
+                      <sonar.login>${{ steps.secrets.outputs.SONAR_TOKEN }}</sonar.login>
+                    </properties>
+                  </profile>
+                </profiles>
+                <activeProfiles>
+                  <activeProfile>artifactory</activeProfile>
+                  <activeProfile>sonar</activeProfile>
+                </activeProfiles>
+              </settings>" > ~/.m2/settings.xml
+
+    - name: Set Maven Variables
+      run: |
+        mvn versions:set-property -Dproperty=revision -Dvalue=${{ inputs.revision }}
+        if [ -n "${{ inputs.payloadrevision }}" ]; then
+          mvn versions:set-property -Dproperty=payloadrevision -Dvalue=${{ inputs.payloadrevision }}
+        fi
+
+    - name: Run Maven Build
+      run: mvn clean install ${{ inputs.additional-maven-commands }} -T 1C
+
+    - name: SonarQube Scan
+      env:
+        SONAR_TOKEN: ${{ steps.secrets.outputs.SONAR_TOKEN }}
+      run: mvn sonar:sonar -Dsonar.login=${{ env.SONAR_TOKEN }}
